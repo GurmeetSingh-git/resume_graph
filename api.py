@@ -2,11 +2,14 @@ import os
 import re
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+import tempfile
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from utils import get_resume_text, validate_drive_url
+from utils import extract_uploaded_format_text, get_resume_text, validate_drive_url
 
 app = FastAPI(title="Resume Graph API", version="1.0.0")
 app.add_middleware(
@@ -21,6 +24,8 @@ app.add_middleware(
 class ResumeRequest(BaseModel):
     resume_url: Optional[str] = None
     resume_path: Optional[str] = None
+    format_reference: Optional[str] = None
+    format_file_name: Optional[str] = None
     job_description: str = Field(..., min_length=1)
     feedback: str = ""
 
@@ -49,8 +54,25 @@ def validate_drive_url_endpoint(payload: dict):
 
 
 @app.post("/api/generate-resume")
-def generate_resume(request: ResumeRequest):
-    source = request.resume_url or request.resume_path or os.getenv("RESUME_SOURCE")
+async def generate_resume(request: Request):
+    content_type = request.headers.get("content-type", "")
+
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        payload = {
+            "resume_url": form.get("resume_url"),
+            "resume_path": form.get("resume_path"),
+            "format_reference": form.get("format_reference"),
+            "format_file_name": form.get("format_file_name"),
+            "job_description": form.get("job_description"),
+            "feedback": form.get("feedback"),
+        }
+        uploaded_file = form.get("format_file")
+    else:
+        payload = await request.json()
+        uploaded_file = None
+
+    source = payload.get("resume_url") or payload.get("resume_path") or os.getenv("RESUME_SOURCE")
     if not source:
         raise HTTPException(status_code=400, detail="Provide a resume URL or resume path.")
 
@@ -59,9 +81,30 @@ def generate_resume(request: ResumeRequest):
     except Exception as exc:  # pragma: no cover - surfaced to API caller
         raise HTTPException(status_code=400, detail=f"Could not read resume: {exc}") from exc
 
-    job_description = request.job_description.strip()
+    job_description = (payload.get("job_description") or "").strip()
     if not job_description:
         raise HTTPException(status_code=400, detail="Job description is required.")
+
+    format_reference = payload.get("format_reference")
+    format_file_name = payload.get("format_file_name")
+
+    uploaded_file_path = None
+    if uploaded_file is not None:
+        upload_dir = Path(tempfile.gettempdir()) / "resume_graph_uploads"
+        upload_dir.mkdir(exist_ok=True)
+        file_name = getattr(uploaded_file, "filename", None) or str(format_file_name or "uploaded_format")
+        safe_name = Path(file_name).name
+        saved_path = upload_dir / safe_name
+        saved_path.write_bytes(await uploaded_file.read())
+        uploaded_file_path = str(saved_path)
+        if not format_file_name:
+            format_file_name = safe_name
+
+        extracted_format_text = extract_uploaded_format_text(saved_path)
+        if extracted_format_text:
+            format_reference = extracted_format_text
+        elif not format_reference:
+            format_reference = f"Uploaded format reference file: {safe_name}"
 
     keywords = [k.strip() for k in re.split(r"[\n,;]+", job_description) if k.strip()]
     keywords = keywords[:12]
@@ -89,8 +132,12 @@ def generate_resume(request: ResumeRequest):
         + "\\end{document}\n"
     )
 
-    if request.feedback:
-        generated_resume += "\n% Feedback notes: " + request.feedback
+    feedback = (payload.get("feedback") or "").strip()
+    if feedback:
+        generated_resume += "\n% Feedback notes: " + feedback
+
+    if format_reference:
+        generated_resume += "\n% Format reference: " + format_reference[:1000]
 
     return {
         "status": "ok",
@@ -100,6 +147,9 @@ def generate_resume(request: ResumeRequest):
         "missing_keywords": missing,
         "resume_preview": resume_text[:2000],
         "source": source,
+        "format_reference": format_reference,
+        "format_file_name": format_file_name,
+        "format_reference_file_path": uploaded_file_path,
     }
 
 

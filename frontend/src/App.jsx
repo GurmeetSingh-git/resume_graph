@@ -3,6 +3,7 @@ import './App.css'
 
 const initialForm = {
   resumeUrl: 'https://drive.google.com/file/d/1-ZB4-SN3h2Wp3CTRNyHjTn0iWwZupZ1E/view?usp=sharing',
+  formatReference: '',
   jobDescription: 'Looking for a Python engineer with FastAPI, PostgreSQL, AWS, and 3+ years of backend experience.',
   feedback: '',
 }
@@ -14,6 +15,9 @@ function App() {
   const [result, setResult] = useState(null)
   const [error, setError] = useState('')
   const [validation, setValidation] = useState(null)
+  const [copyStatus, setCopyStatus] = useState('idle')
+  const [formatFileName, setFormatFileName] = useState('')
+  const [selectedFormatFile, setSelectedFormatFile] = useState(null)
 
   const handleChange = (event) => {
     const { name, value } = event.target
@@ -50,6 +54,18 @@ function App() {
     }
   }
 
+  const handleFormatFileChange = (event) => {
+    const file = event.target.files?.[0]
+    if (!file) {
+      setSelectedFormatFile(null)
+      setFormatFileName('')
+      return
+    }
+
+    setSelectedFormatFile(file)
+    setFormatFileName(file.name)
+  }
+
   const handleSubmit = async (event) => {
     event.preventDefault()
     setLoading(true)
@@ -62,14 +78,21 @@ function App() {
     }
 
     try {
+      const formData = new FormData()
+      formData.append('resume_url', form.resumeUrl)
+      formData.append('job_description', form.jobDescription)
+      formData.append('feedback', form.feedback)
+      formData.append('format_reference', form.formatReference)
+      if (formatFileName) {
+        formData.append('format_file_name', formatFileName)
+      }
+      if (selectedFormatFile) {
+        formData.append('format_file', selectedFormatFile)
+      }
+
       const response = await fetch('http://localhost:8000/api/generate-resume', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          resume_url: form.resumeUrl,
-          job_description: form.jobDescription,
-          feedback: form.feedback,
-        }),
+        body: formData,
       })
 
       const data = await response.json()
@@ -78,10 +101,24 @@ function App() {
       }
 
       setResult(data)
+      setCopyStatus('idle')
     } catch (err) {
       setError(err.message || 'Failed to generate resume.')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleCopyResume = async () => {
+    if (!result?.generated_resume) return
+
+    try {
+      await navigator.clipboard.writeText(result.generated_resume)
+      setCopyStatus('copied')
+      window.setTimeout(() => setCopyStatus('idle'), 1500)
+    } catch (err) {
+      setCopyStatus('failed')
+      window.setTimeout(() => setCopyStatus('idle'), 1500)
     }
   }
 
@@ -119,6 +156,25 @@ function App() {
             </p>
           )}
 
+          <label className="format-label">
+            <span>Format reference</span>
+            <textarea
+              name="formatReference"
+              value={form.formatReference}
+              onChange={handleChange}
+              rows={4}
+              placeholder="Paste a LaTeX snippet, DOC/PDF link, or image reference here."
+            />
+            <div className="format-upload-row">
+              <input
+                type="file"
+                accept=".tex,.doc,.docx,.pdf,image/*"
+                onChange={handleFormatFileChange}
+              />
+              {formatFileName && <span className="file-name">Selected: {formatFileName}</span>}
+            </div>
+          </label>
+
           <label>
             Job description
             <textarea
@@ -152,7 +208,15 @@ function App() {
         </form>
 
         <div className="panel output-panel">
-          <h2>Output</h2>
+          <div className="output-header">
+            <h2>Output</h2>
+            {result?.generated_resume && (
+              <button type="button" className="copy-button" onClick={handleCopyResume}>
+                {copyStatus === 'copied' ? 'Copied!' : 'Copy'}
+              </button>
+            )}
+          </div>
+
           {!result ? (
             <p>Submit a resume URL and JD to generate output.</p>
           ) : (

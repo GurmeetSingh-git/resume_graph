@@ -1,8 +1,10 @@
 import json
 import itertools
+import mimetypes
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import TypedDict, Optional
 
 from dotenv import load_dotenv
@@ -12,12 +14,27 @@ from langgraph.graph import StateGraph, END
 from langgraph.types import interrupt, Command
 from langgraph.checkpoint.memory import MemorySaver
 
+try:
+    from langsmith.wrappers import wrap_gemini
+except ImportError:  # pragma: no cover - optional dependency for LangSmith tracing
+    wrap_gemini = None
+
 from utils import get_resume_text
 
 url = "https://ganixai.com/about"
 
 load_dotenv()
-client = genai.Client()
+
+
+def _build_gemini_client():
+    """Return a Gemini client wrapped for LangSmith tracing when available."""
+    client = genai.Client()
+    if wrap_gemini is not None:
+        return wrap_gemini(client)
+    return client
+
+
+client = _build_gemini_client()
 MODEL_CONFIG = types.GenerateContentConfig(
     automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
 )
@@ -40,6 +57,8 @@ class Agentstate(TypedDict):
     eligibility_status: Optional[str]
     eligibility_reason: Optional[str]
     iterations: int
+    format_reference_text: Optional[str]
+    format_reference_file_path: Optional[str]
 
 
 # NODE 0: Ask human for the JD first (pauses graph at the very start)
@@ -90,6 +109,29 @@ def get_master_resume(state: Agentstate):
     return {"master_resume": get_resume_text()}
 
 
+def _build_llm_contents(prompt: str, state: Agentstate):
+    """Attach uploaded format files as direct multimodal inputs to the LLM prompt."""
+    parts = [prompt]
+    file_path = state.get("format_reference_file_path")
+    file_text = state.get("format_reference_text")
+
+    if file_path:
+        path = Path(file_path)
+        if path.exists():
+            mime_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+            try:
+                data = path.read_bytes()
+                if data:
+                    parts.append(types.Part.from_bytes(data=data, mime_type=mime_type, filename=path.name))
+            except Exception:
+                pass
+
+    if file_text and not file_path:
+        parts.append(file_text)
+
+    return parts
+
+
 # NODE 3: Generate tailored resume in LaTeX
 def generate_resume_latex(state: Agentstate):
     """
@@ -119,8 +161,9 @@ Master resume:
 Return only complete compilable LaTeX source code. Do not wrap it in Markdown fences or add commentary.
 Preserve truthful experience and skills; do not invent qualifications."""
 
+    contents = _build_llm_contents(prompt, state)
     response = client.models.generate_content(
-        model="gemma-4-26b-a4b-it", contents=prompt, config=MODEL_CONFIG
+        model="gemma-4-26b-a4b-it", contents=contents, config=MODEL_CONFIG
     )
 
     latex = response.text.strip()

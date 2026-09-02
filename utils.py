@@ -6,6 +6,8 @@ from urllib.parse import parse_qs, urlparse
 
 import docx
 import requests
+from PIL import Image
+from pypdf import PdfReader
 
 
 DEFAULT_RESUME_PATH = Path(r"D:\Downloads\Resume_Master_15_08.docx")
@@ -132,6 +134,59 @@ def validate_drive_url(source: str) -> dict:
         "message": "Google Drive URL is valid and downloadable.",
         "content_type": response.headers.get("Content-Type", ""),
     }
+
+
+def _normalize_text(value: str) -> str:
+    """Normalize extracted text by stripping empty lines and keeping ASCII-safe output."""
+    if not value:
+        return ""
+    lines = [line.strip() for line in str(value).splitlines() if line.strip()]
+    return "\n".join(lines)
+
+
+def extract_uploaded_format_text(source: str | Path) -> str:
+    """Extract readable text from a pasted or uploaded format sample file."""
+    path = Path(source).expanduser()
+    if not path.exists():
+        raise FileNotFoundError(f"Format file not found: {path}")
+
+    suffix = path.suffix.lower()
+
+    if suffix in {".tex", ".latex", ".txt"}:
+        return _normalize_text(path.read_text(encoding="utf-8", errors="ignore"))
+
+    if suffix == ".docx":
+        doc = docx.Document(str(path))
+        paragraphs = [para.text for para in doc.paragraphs if para.text.strip()]
+        return _normalize_text("\n".join(paragraphs))
+
+    if suffix == ".doc":
+        return f"Legacy DOC file uploaded: {path.name}. This environment supports DOCX, PDF, LaTeX, and image uploads; legacy DOC text extraction may require an external converter."
+
+    if suffix == ".pdf":
+        reader = PdfReader(str(path))
+        pages = []
+        for page in reader.pages:
+            text = page.extract_text() or ""
+            if text.strip():
+                pages.append(text)
+        return _normalize_text("\n".join(pages))
+
+    if suffix in {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}:
+        try:
+            with Image.open(path) as image:
+                width, height = image.size
+                return (
+                    f"Image upload: {path.name} | dimensions: {width}x{height}. "
+                    "OCR support is not available in this environment, so the image was accepted as a format reference only."
+                )
+        except Exception as exc:
+            return f"Image upload: {path.name}. Could not read image metadata: {exc}"
+
+    try:
+        return _normalize_text(path.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
+        return f"Format file accepted: {path.name}. This file type was uploaded successfully but cannot be parsed automatically in the current backend setup."
 
 
 def get_resume_text(source: str | None = None) -> str:

@@ -4,11 +4,23 @@ import requests
 from dotenv import load_dotenv
 from google import genai
 
+try:
+    from langsmith.wrappers import wrap_gemini
+except ImportError:  # pragma: no cover - optional dependency for LangSmith tracing
+    wrap_gemini = None
+
 # Load environment variables from the .env file
 load_dotenv()
 
 # Initialize the Gemini client (it automatically picks up GEMINI_API_KEY from the environment)
-client = genai.Client()
+def _build_gemini_client():
+    client = genai.Client()
+    if wrap_gemini is not None:
+        return wrap_gemini(client)
+    return client
+
+
+client = _build_gemini_client()
 
 def _get_clean_website_text(url):
     """

@@ -18,6 +18,12 @@ function App() {
   const [copyStatus, setCopyStatus] = useState('idle')
   const [formatFileName, setFormatFileName] = useState('')
   const [selectedFormatFile, setSelectedFormatFile] = useState(null)
+  const [missingSkills, setMissingSkills] = useState([])
+  const [selectedSkills, setSelectedSkills] = useState([])
+  const [jobSkills, setJobSkills] = useState([])
+  const [showSkillModal, setShowSkillModal] = useState(false)
+  const [showEvaluation, setShowEvaluation] = useState(false)
+  const [evaluationFeedback, setEvaluationFeedback] = useState('')
 
   const handleChange = (event) => {
     const { name, value } = event.target
@@ -66,6 +72,39 @@ function App() {
     setFormatFileName(file.name)
   }
 
+  const requestAnalysis = async () => {
+    const response = await fetch('http://localhost:8000/api/analyze-resume', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resume_url: form.resumeUrl, job_description: form.jobDescription }),
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.detail || 'Resume analysis failed')
+    return data
+  }
+
+  const requestGeneration = async (addedSkills = [], feedback = '') => {
+    const formData = new FormData()
+    formData.append('resume_url', form.resumeUrl)
+    formData.append('job_description', form.jobDescription)
+    formData.append('feedback', feedback || form.feedback)
+    formData.append('added_skills', JSON.stringify(addedSkills))
+    formData.append('job_skills', JSON.stringify(jobSkills))
+    formData.append('format_reference', form.formatReference)
+    if (formatFileName) formData.append('format_file_name', formatFileName)
+    if (selectedFormatFile) formData.append('format_file', selectedFormatFile)
+
+    const response = await fetch('http://localhost:8000/api/generate-resume', {
+      method: 'POST',
+      body: formData,
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.detail || 'Something went wrong')
+    setResult(data)
+    setCopyStatus('idle')
+    setShowEvaluation(true)
+  }
+
   const handleSubmit = async (event) => {
     event.preventDefault()
     setLoading(true)
@@ -78,32 +117,52 @@ function App() {
     }
 
     try {
-      const formData = new FormData()
-      formData.append('resume_url', form.resumeUrl)
-      formData.append('job_description', form.jobDescription)
-      formData.append('feedback', form.feedback)
-      formData.append('format_reference', form.formatReference)
-      if (formatFileName) {
-        formData.append('format_file_name', formatFileName)
+      const analysis = await requestAnalysis()
+      setJobSkills(analysis.keywords || [])
+      if (analysis.missing_keywords?.length) {
+        setMissingSkills(analysis.missing_keywords)
+        setSelectedSkills([])
+        setShowSkillModal(true)
+      } else {
+        await requestGeneration()
       }
-      if (selectedFormatFile) {
-        formData.append('format_file', selectedFormatFile)
-      }
-
-      const response = await fetch('http://localhost:8000/api/generate-resume', {
-        method: 'POST',
-        body: formData,
-      })
-
-      const data = await response.json()
-      if (!response.ok) {
-        throw new Error(data.detail || 'Something went wrong')
-      }
-
-      setResult(data)
-      setCopyStatus('idle')
     } catch (err) {
       setError(err.message || 'Failed to generate resume.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleSkillSave = async () => {
+    setShowSkillModal(false)
+    setLoading(true)
+    setError('')
+    try {
+      await requestGeneration(selectedSkills)
+    } catch (err) {
+      setError(err.message || 'Failed to generate resume.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleSkillToggle = (skill) => {
+    setSelectedSkills((current) => (
+      current.includes(skill)
+        ? current.filter((item) => item !== skill)
+        : [...current, skill]
+    ))
+  }
+
+  const handleEvaluationIterate = async () => {
+    setShowEvaluation(false)
+    setLoading(true)
+    setError('')
+    try {
+      await requestGeneration(selectedSkills, evaluationFeedback)
+      setEvaluationFeedback('')
+    } catch (err) {
+      setError(err.message || 'Failed to iterate on the resume.')
     } finally {
       setLoading(false)
     }
@@ -116,7 +175,7 @@ function App() {
       await navigator.clipboard.writeText(result.generated_resume)
       setCopyStatus('copied')
       window.setTimeout(() => setCopyStatus('idle'), 1500)
-    } catch (err) {
+    } catch {
       setCopyStatus('failed')
       window.setTimeout(() => setCopyStatus('idle'), 1500)
     }
@@ -231,6 +290,70 @@ function App() {
           )}
         </div>
       </main>
+
+      {showSkillModal && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="modal" role="dialog" aria-modal="true" aria-labelledby="skills-title">
+            <p className="eyebrow">Master resume check</p>
+            <h2 id="skills-title">Missing skills found</h2>
+            <p>These skills were found in the job description but not in your master resume. Keep only skills you genuinely have.</p>
+            <div className="skill-list">
+              {missingSkills.map((skill) => (
+                <button
+                  type="button"
+                  className={`skill-tile ${selectedSkills.includes(skill) ? 'selected' : ''}`}
+                  key={skill}
+                  onClick={() => handleSkillToggle(skill)}
+                >
+                  {skill}
+                </button>
+              ))}
+            </div>
+            <div className="selected-skills-field">
+              <span>Skills to emphasize</span>
+              <div className="selected-skills-box">
+                {selectedSkills.length === 0 && <span className="empty-selection">Click a skill above to add it here.</span>}
+                {selectedSkills.map((skill) => (
+                  <button
+                    type="button"
+                    className="selected-skill"
+                    key={skill}
+                    onClick={() => handleSkillToggle(skill)}
+                    aria-label={`Remove ${skill}`}
+                  >
+                    {skill}<span aria-hidden="true">×</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="quiet-button" onClick={() => setShowSkillModal(false)}>Exit</button>
+              <button type="button" onClick={handleSkillSave} disabled={loading}>Save and continue</button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {showEvaluation && result && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="modal" role="dialog" aria-modal="true" aria-labelledby="evaluation-title">
+            <p className="eyebrow">Evaluation complete</p>
+            <h2 id="evaluation-title">Resume match: {Math.round((result.match_score || 0) * 100)}%</h2>
+            <p>{result.missing_keywords?.length ? 'These keywords are still missing:' : 'All identified keywords are present.'}</p>
+            {result.missing_keywords?.length > 0 && (
+              <div className="skill-list">{result.missing_keywords.map((skill) => <span key={skill}>{skill}</span>)}</div>
+            )}
+            <label>
+              Feedback for one more iteration
+              <textarea value={evaluationFeedback} onChange={(event) => setEvaluationFeedback(event.target.value)} rows={4} placeholder="Tell the model what to improve..." />
+            </label>
+            <div className="modal-actions">
+              <button type="button" className="quiet-button" onClick={() => setShowEvaluation(false)}>Finish</button>
+              <button type="button" onClick={handleEvaluationIterate} disabled={loading}>Iterate once</button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   )
 }

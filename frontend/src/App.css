@@ -121,6 +121,136 @@ button:disabled {
   cursor: not-allowed;
 }
 
+.quiet-button {
+  background: #e2e8f0;
+  color: #1e293b;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(15, 23, 42, 0.48);
+  z-index: 10;
+}
+
+.modal {
+  width: min(560px, 100%);
+  max-height: min(720px, 90vh);
+  overflow: auto;
+  background: #ffffff;
+  border-radius: 16px;
+  padding: 28px;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.28);
+}
+
+.modal h2 {
+  margin: 0 0 10px;
+}
+
+.modal p {
+  color: #475569;
+}
+
+.eyebrow {
+  margin-bottom: 8px;
+  color: #2563eb !important;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.skill-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 16px 0;
+}
+
+.skill-list span {
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: #eff6ff;
+  color: #1e40af;
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.skill-tile {
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: #eff6ff;
+  color: #1e40af;
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.skill-tile:hover,
+.skill-tile.selected {
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.selected-skills-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.selected-skills-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 8px;
+  min-height: 92px;
+  padding: 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.empty-selection {
+  color: #64748b;
+  font-size: 0.9rem;
+  font-weight: 400;
+}
+
+.selected-skill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #1e40af;
+  font-size: 0.88rem;
+}
+
+.selected-skill span {
+  font-size: 1.1rem;
+  line-height: 0.8;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.selected-skill:hover span,
+.selected-skill:focus-visible span {
+  opacity: 1;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+}
+
 .output-panel {
   overflow: auto;
 }

@@ -59,6 +59,8 @@ class Agentstate(TypedDict):
     iterations: int
     format_reference_text: Optional[str]
     format_reference_file_path: Optional[str]
+    accepted_skills: Optional[list]
+    continue_generation: Optional[bool]
 
 
 # NODE 0: Ask human for the JD first (pauses graph at the very start)
@@ -109,9 +111,35 @@ def get_master_resume(state: Agentstate):
     return {"master_resume": get_resume_text()}
 
 
+# NODE 3: Find JD skills that are absent from the master resume
+def find_missing_skills(state: Agentstate):
+    resume_text = (state.get("master_resume") or "").lower()
+    keywords = state.get("jd_keywords") or []
+    missing = [keyword for keyword in keywords if keyword.lower() not in resume_text]
+    if not missing:
+        return {"missing_keywords": [], "continue_generation": True}
+
+    decision = interrupt({
+        "type": "missing_skills",
+        "missing_skills": missing,
+        "message": "Some JD skills are missing from the master resume. Add only skills you genuinely have, or exit.",
+    })
+    if isinstance(decision, dict):
+        accepted = decision.get("accepted_skills") or []
+        continue_generation = decision.get("continue_generation", True)
+    else:
+        accepted = [skill.strip() for skill in str(decision).split(",") if skill.strip()]
+        continue_generation = True
+    return {
+        "accepted_skills": accepted,
+        "missing_keywords": missing,
+        "continue_generation": continue_generation,
+    }
+
+
 def _build_llm_contents(prompt: str, state: Agentstate):
     """Attach uploaded format files as direct multimodal inputs to the LLM prompt."""
-    parts = [prompt]
+    parts = [types.Part.from_text(text=prompt)]
     file_path = state.get("format_reference_file_path")
     file_text = state.get("format_reference_text")
 
@@ -122,14 +150,14 @@ def _build_llm_contents(prompt: str, state: Agentstate):
             try:
                 data = path.read_bytes()
                 if data:
-                    parts.append(types.Part.from_bytes(data=data, mime_type=mime_type, filename=path.name))
+                    parts.append(types.Part.from_bytes(data=data, mime_type=mime_type))
             except Exception:
                 pass
 
     if file_text and not file_path:
         parts.append(file_text)
 
-    return parts
+    return [types.Content(role="user", parts=parts)]
 
 
 # NODE 3: Generate tailored resume in LaTeX
@@ -142,12 +170,15 @@ def generate_resume_latex(state: Agentstate):
     """
     feedback_note = state.get("human_feedback") or ""
     missing = state.get("missing_keywords") or []
+    accepted_skills = state.get("accepted_skills") or []
 
     feedback_block = ""
     if feedback_note:
         feedback_block += f"\n\nHuman feedback to incorporate:\n{feedback_note}"
     if missing:
         feedback_block += f"\n\nThese JD keywords are missing or underrepresented — weave in truthfully wherever applicable:\n{', '.join(missing)}"
+    if accepted_skills:
+        feedback_block += f"\n\nThe candidate confirmed these skills and asked to emphasize them:\n{', '.join(accepted_skills)}"
 
     prompt = f"""You are a resume tailoring agent. Tailor the master resume to the job description below.
 
@@ -246,11 +277,7 @@ def route_after_match(state: Agentstate):
 def route_after_eligibility(state: Agentstate):
     if state.get("eligibility_status") != "eligible":
         return "Not eligible"
-    if state.get("match_score", 0) >= KEYWORD_MATCH_THRESHOLD:
-        return "Human Review"
-    if state.get("iterations", 0) >= MAX_ITERATIONS:
-        return "Human Review"
-    return "Generate Resume Latex"
+    return "Human Review"
 
 
 # NODE 5: Pause for human review
@@ -259,20 +286,23 @@ def human_review(state: Agentstate):
     LangGraph Node:
     Pauses the graph and waits for the human to approve or request tweaks.
     """
-    feedback = interrupt({
+    decision = interrupt({
+        "type": "evaluation",
         "generated_resume": state.get("generated_resume"),
         "match_score": state.get("match_score"),
         "missing_keywords": state.get("missing_keywords"),
-        "message": "Review the resume. Reply 'approve' to finish, or describe changes.",
+        "message": "Review the match score and missing keywords. Choose finish or request one more iteration.",
     })
-    return {"human_feedback": feedback}
+    if isinstance(decision, dict):
+        return {
+            "human_feedback": decision.get("feedback", ""),
+            "continue_generation": decision.get("iterate", False),
+        }
+    return {"human_feedback": str(decision), "continue_generation": False}
 
 
 def route_after_human(state: Agentstate):
-    feedback = (state.get("human_feedback") or "").strip().lower()
-    if feedback in ("approve", "approved", "ok", "looks good"):
-        return END
-    return "Generate Resume Latex"
+    return "Generate Resume Latex" if state.get("continue_generation") else END
 
 
 # ---- Build the graph ----
@@ -286,7 +316,14 @@ workflow.add_node("Extract JD Keywords", extract_jd_keywords)
 workflow.add_edge("Extract JD Keywords", "Get Master Resume")
 
 workflow.add_node("Get Master Resume", get_master_resume)
-workflow.add_edge("Get Master Resume", "Generate Resume Latex")
+workflow.add_edge("Get Master Resume", "Find Missing Skills")
+
+workflow.add_node("Find Missing Skills", find_missing_skills)
+workflow.add_conditional_edges(
+    "Find Missing Skills",
+    lambda state: "Generate Resume Latex" if state.get("continue_generation") else END,
+    {"Generate Resume Latex": "Generate Resume Latex", END: END},
+)
 
 workflow.add_node("Generate Resume Latex", generate_resume_latex)
 workflow.add_edge("Generate Resume Latex", "Evaluate Match")
@@ -305,7 +342,6 @@ workflow.add_conditional_edges(
     {
         "Not eligible": END,
         "Human Review": "Human Review",
-        "Generate Resume Latex": "Generate Resume Latex",
     },
 )
 
@@ -354,32 +390,32 @@ def read_job_description():
 
 if __name__ == "__main__":
     # Uncomment to visualize the graph:
-    # app.get_graph().draw_mermaid_png(output_file_path="workflow.png")
+    app.get_graph().draw_mermaid_png(output_file_path="workflow.png")
 
-    config = {"configurable": {"thread_id": "resume-session-1"}}
+    # config = {"configurable": {"thread_id": "resume-session-1"}}
 
-    result = invoke_with_progress({"company_url": url, "iterations": 0}, config)
+    # result = invoke_with_progress({"company_url": url, "iterations": 0}, config)
 
-    while "__interrupt__" in result:
-        info = result["__interrupt__"][0].value
-        print("\n" + info["message"])
-        if "generated_resume" in info:
-            print("\n--- Current resume (preview) ---")
-            print(info["generated_resume"][:500])
-            print(f"\nMatch score: {info.get('match_score')}")
-            print(f"Missing keywords: {info.get('missing_keywords')}")
-        if "generated_resume" in info:
-            user_input = input("\nYour response: ")
-        else:
-            user_input = read_job_description()
-        result = invoke_with_progress(Command(resume=user_input), config)
+    # while "__interrupt__" in result:
+    #     info = result["__interrupt__"][0].value
+    #     print("\n" + info["message"])
+    #     if "generated_resume" in info:
+    #         print("\n--- Current resume (preview) ---")
+    #         print(info["generated_resume"][:500])
+    #         print(f"\nMatch score: {info.get('match_score')}")
+    #         print(f"Missing keywords: {info.get('missing_keywords')}")
+    #     if "generated_resume" in info:
+    #         user_input = input("\nYour response: ")
+    #     else:
+    #         user_input = read_job_description()
+    #     result = invoke_with_progress(Command(resume=user_input), config)
 
-    if result.get("eligibility_status") == "not_eligible":
-        print("\n--- Not eligible ---")
-        print(result.get("eligibility_reason"))
-        raise SystemExit
+    # if result.get("eligibility_status") == "not_eligible":
+    #     print("\n--- Not eligible ---")
+    #     print(result.get("eligibility_reason"))
+    #     raise SystemExit
 
-    print("\n--- Final resume ---")
-    print(result.get("generated_resume"))
-    print("\nMatch score:", result.get("match_score"))
-    print("Missing keywords:", result.get("missing_keywords"))
+    # print("\n--- Final resume ---")
+    # print(result.get("generated_resume"))
+    # print("\nMatch score:", result.get("match_score"))
+    # print("Missing keywords:", result.get("missing_keywords"))

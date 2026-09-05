@@ -1,5 +1,7 @@
 import os
 import re
+import json
+import mimetypes
 from typing import Optional
 
 import tempfile
@@ -8,8 +10,18 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from dotenv import load_dotenv
+from google import genai
+from google.genai import types
+
+try:
+    from langsmith.wrappers import wrap_gemini
+except ImportError:  # pragma: no cover - optional dependency for LangSmith tracing
+    wrap_gemini = None
 
 from utils import extract_uploaded_format_text, get_resume_text, validate_drive_url
+
+load_dotenv()
 
 app = FastAPI(title="Resume Graph API", version="1.0.0")
 app.add_middleware(
@@ -28,11 +40,90 @@ class ResumeRequest(BaseModel):
     format_file_name: Optional[str] = None
     job_description: str = Field(..., min_length=1)
     feedback: str = ""
+    added_skills: list[str] = []
+
+
+def _build_gemini_client():
+    client = genai.Client()
+    if wrap_gemini is not None:
+        return wrap_gemini(client)
+    return client
+
+
+client = _build_gemini_client()
+MODEL_CONFIG = types.GenerateContentConfig(
+    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
+)
 
 
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+
+def _extract_job_skills(job_description: str):
+    prompt = f"""Extract only concise, meaningful skills from this job description.
+
+Include technical skills (languages, frameworks, cloud platforms, databases, tools, methodologies) and non-technical professional skills (communication, leadership, ownership, collaboration).
+Do not return sentences, company names, locations, benefits, job titles, experience ranges, or product descriptions.
+Use one skill per item, normally 1-4 words. Return ONLY valid JSON in this format:
+{{"technical": ["Python"], "non_technical": ["Technical communication"]}}
+
+Job description:
+{job_description}"""
+    response = client.models.generate_content(
+        model="gemma-4-26b-a4b-it", contents=prompt, config=MODEL_CONFIG
+    )
+    text = (response.text or "").strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+    try:
+        extracted = json.loads(text)
+    except json.JSONDecodeError:
+        extracted = {}
+    technical = extracted.get("technical", []) if isinstance(extracted, dict) else []
+    non_technical = extracted.get("non_technical", []) if isinstance(extracted, dict) else []
+    skills = [str(skill).strip() for skill in [*technical, *non_technical] if str(skill).strip()]
+    return list(dict.fromkeys(skills))[:20]
+
+
+def _get_keyword_match(resume_text: str, job_description: str, added_skills=None, job_skills=None):
+    keywords = job_skills or _extract_job_skills(job_description)
+    keywords = list(dict.fromkeys(keywords + [skill.strip() for skill in (added_skills or []) if skill.strip()]))[:20]
+    resume_lower = resume_text.lower()
+    matched = [kw for kw in keywords if kw.lower() in resume_lower]
+    missing = [kw for kw in keywords if kw.lower() not in resume_lower]
+    match_score = round(len(matched) / len(keywords), 2) if keywords else 0.0
+    return keywords, matched, missing, match_score
+
+
+def _load_resume_source(source: str | None):
+    if not source:
+        raise HTTPException(status_code=400, detail="Provide a resume URL or resume path.")
+    try:
+        return get_resume_text(source)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not read resume: {exc}") from exc
+
+
+@app.post("/api/analyze-resume")
+def analyze_resume(payload: dict):
+    source = (payload or {}).get("resume_url") or (payload or {}).get("resume_path") or os.getenv("RESUME_SOURCE")
+    resume_text = _load_resume_source(source)
+    job_description = ((payload or {}).get("job_description") or "").strip()
+    if not job_description:
+        raise HTTPException(status_code=400, detail="Job description is required.")
+
+    keywords, matched, missing, match_score = _get_keyword_match(resume_text, job_description)
+    return {
+        "status": "ok",
+        "source": source,
+        "keywords": keywords,
+        "matched_keywords": matched,
+        "missing_keywords": missing,
+        "match_score": match_score,
+        "resume_preview": resume_text[:2000],
+    }
 
 
 @app.post("/api/validate-drive-url")
@@ -66,6 +157,8 @@ async def generate_resume(request: Request):
             "format_file_name": form.get("format_file_name"),
             "job_description": form.get("job_description"),
             "feedback": form.get("feedback"),
+            "added_skills": form.get("added_skills"),
+            "job_skills": form.get("job_skills"),
         }
         uploaded_file = form.get("format_file")
     else:
@@ -73,13 +166,7 @@ async def generate_resume(request: Request):
         uploaded_file = None
 
     source = payload.get("resume_url") or payload.get("resume_path") or os.getenv("RESUME_SOURCE")
-    if not source:
-        raise HTTPException(status_code=400, detail="Provide a resume URL or resume path.")
-
-    try:
-        resume_text = get_resume_text(source)
-    except Exception as exc:  # pragma: no cover - surfaced to API caller
-        raise HTTPException(status_code=400, detail=f"Could not read resume: {exc}") from exc
+    resume_text = _load_resume_source(source)
 
     job_description = (payload.get("job_description") or "").strip()
     if not job_description:
@@ -89,6 +176,7 @@ async def generate_resume(request: Request):
     format_file_name = payload.get("format_file_name")
 
     uploaded_file_path = None
+    uploaded_file_mime_type = None
     if uploaded_file is not None:
         upload_dir = Path(tempfile.gettempdir()) / "resume_graph_uploads"
         upload_dir.mkdir(exist_ok=True)
@@ -97,6 +185,7 @@ async def generate_resume(request: Request):
         saved_path = upload_dir / safe_name
         saved_path.write_bytes(await uploaded_file.read())
         uploaded_file_path = str(saved_path)
+        uploaded_file_mime_type = mimetypes.guess_type(str(saved_path))[0]
         if not format_file_name:
             format_file_name = safe_name
 
@@ -106,38 +195,76 @@ async def generate_resume(request: Request):
         elif not format_reference:
             format_reference = f"Uploaded format reference file: {safe_name}"
 
-    keywords = [k.strip() for k in re.split(r"[\n,;]+", job_description) if k.strip()]
-    keywords = keywords[:12]
-    resume_lower = resume_text.lower()
-    matched = [kw for kw in keywords if kw.lower() in resume_lower]
-    missing = [kw for kw in keywords if kw.lower() not in resume_lower]
-    match_score = round(len(matched) / len(keywords), 2) if keywords else 0.0
-
-    generated_resume = (
-        "\\documentclass[11pt]{article}\n"
-        "\\usepackage[margin=1in]{geometry}\n"
-        "\\usepackage{enumitem}\n"
-        "\\begin{document}\n"
-        "\\section*{Tailored Profile}\n"
-        "This resume has been tailored to the role using the candidate's existing experience and the provided job requirements.\n"
-        "\\vspace{0.5em}\n"
-        "\\textbf{Target role:} " + job_description[:180].replace("\n", " ") + "\\\n"
-        "\\vspace{0.5em}\n"
-        "\\textbf{Match score:} " + str(match_score) + "\\\n"
-        "\\vspace{0.5em}\n"
-        "\\textbf{Candidate highlights:}\\\n"
-        + "\\begin{itemize}\n"
-        + "\n".join(f"\\item {line.strip()}" for line in resume_text.splitlines()[:8] if line.strip())
-        + "\\end{itemize}\n"
-        + "\\end{document}\n"
-    )
-
     feedback = (payload.get("feedback") or "").strip()
-    if feedback:
-        generated_resume += "\n% Feedback notes: " + feedback
+    added_skills = payload.get("added_skills") or []
+    if isinstance(added_skills, str):
+        try:
+            added_skills = json.loads(added_skills)
+        except json.JSONDecodeError:
+            added_skills = [added_skills]
+    job_skills = payload.get("job_skills") or []
+    if isinstance(job_skills, str):
+        try:
+            job_skills = json.loads(job_skills)
+        except json.JSONDecodeError:
+            job_skills = []
+    keywords, matched, missing, match_score = _get_keyword_match(
+        resume_text, job_description, added_skills, job_skills
+    )
+    prompt = f"""Tailor the candidate's resume to the job description.
 
-    if format_reference:
-        generated_resume += "\n% Format reference: " + format_reference[:1000]
+Job description:
+{job_description}
+
+Identified job keywords:
+{", ".join(keywords)}
+
+Candidate's master resume:
+{resume_text}
+
+Additional feedback:
+{feedback}
+
+Skills the candidate explicitly selected as skills they have and want included:
+{", ".join(added_skills) or "None"}
+
+Format reference:
+{format_reference or "None provided"}
+
+Return only complete compilable LaTeX source code. Do not use Markdown fences or commentary.
+Include every selected skill in an appropriate skills or experience section when it can be stated truthfully based on the candidate's confirmation. Do not invent employers, dates, achievements, or experience."""
+
+    content_parts = [types.Part.from_text(text=prompt)]
+    if uploaded_file_path and uploaded_file_mime_type and uploaded_file_mime_type.startswith("image/"):
+        try:
+            content_parts.append(
+                types.Part.from_bytes(
+                    data=Path(uploaded_file_path).read_bytes(),
+                    mime_type=uploaded_file_mime_type,
+                )
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Could not read format image: {exc}") from exc
+
+    contents = [types.Content(role="user", parts=content_parts)]
+
+    try:
+        response = client.models.generate_content(
+            model="gemma-4-26b-a4b-it", contents=contents, config=MODEL_CONFIG
+        )
+        generated_resume = (response.text or "").strip()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Resume generation failed: {exc}") from exc
+
+    if not generated_resume:
+        raise HTTPException(status_code=502, detail="Resume generation returned no content.")
+
+    if generated_resume.startswith("```"):
+        generated_resume = generated_resume.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+
+    keywords, matched, missing, match_score = _get_keyword_match(
+        generated_resume, job_description, added_skills, job_skills
+    )
 
     return {
         "status": "ok",

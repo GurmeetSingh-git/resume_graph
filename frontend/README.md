@@ -1,16 +1,61 @@
-# React + Vite
+# Resume Tailor Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+This directory contains the React and Vite frontend for the Resume Tailor application. It calls the FastAPI backend at `http://localhost:8000`.
 
-Currently, two official plugins are available:
+## Prerequisites
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- Node.js and npm
+- Python 3.10 or newer
+- A configured backend environment, including the required API keys in a root `.env` file
 
-## React Compiler
+## Install dependencies
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+From the repository root, install the Python dependencies:
 
-## Expanding the Oxlint configuration
+```powershell
+python -m pip install -r requirements.txt
+```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+Then install the frontend dependencies:
+
+```powershell
+cd frontend
+npm install
+```
+
+## Run the application
+
+Open two terminals from the repository root.
+
+In the first terminal, start the backend:
+
+```powershell
+python -m uvicorn api:app --reload --port 8000
+```
+
+In the second terminal, start the frontend:
+
+```powershell
+cd frontend
+npm run dev
+```
+
+Open the URL printed by Vite, usually `http://localhost:5173`.
+
+## Frontend commands
+
+Run these commands from `frontend/`:
+
+```powershell
+npm run dev       # Start the Vite development server
+npm run build     # Create a production build in dist/
+npm run preview   # Preview the production build locally
+npm run lint      # Run Oxlint
+```
+
+## Main files
+
+- `src/App.jsx`: Main resume tailoring workflow and backend requests
+- `src/App.css`: Component styles
+- `src/index.css`: Global styles
+- `vite.config.js`: Vite configuration

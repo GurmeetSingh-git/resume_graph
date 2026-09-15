@@ -150,6 +150,36 @@ button:disabled {
   margin: 0 0 10px;
 }
 
+.modal h3 {
+  margin: 18px 0 8px;
+  font-size: 1rem;
+}
+
+.evaluation-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.evaluation-summary strong {
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #eff6ff;
+  color: #1e40af;
+  font-size: 0.9rem;
+}
+
+.evaluation-list {
+  margin: 0 0 14px;
+  padding-left: 20px;
+  color: #475569;
+}
+
+.evaluation-list li + li {
+  margin-top: 6px;
+}
+
 .modal p {
   color: #475569;
 }

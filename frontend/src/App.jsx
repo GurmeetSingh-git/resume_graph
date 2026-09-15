@@ -83,11 +83,12 @@ function App() {
     return data
   }
 
-  const requestGeneration = async (addedSkills = [], feedback = '') => {
+  const requestGeneration = async (addedSkills = [], feedback = '', hrFeedback = '') => {
     const formData = new FormData()
     formData.append('resume_url', form.resumeUrl)
     formData.append('job_description', form.jobDescription)
     formData.append('feedback', feedback || form.feedback)
+    formData.append('hr_feedback', hrFeedback)
     formData.append('added_skills', JSON.stringify(addedSkills))
     formData.append('job_skills', JSON.stringify(jobSkills))
     formData.append('format_reference', form.formatReference)
@@ -159,7 +160,11 @@ function App() {
     setLoading(true)
     setError('')
     try {
-      await requestGeneration(selectedSkills, evaluationFeedback)
+      await requestGeneration(
+        selectedSkills,
+        evaluationFeedback,
+        result?.hr_evaluation ? JSON.stringify(result.hr_evaluation) : '',
+      )
       setEvaluationFeedback('')
     } catch (err) {
       setError(err.message || 'Failed to iterate on the resume.')
@@ -337,8 +342,29 @@ function App() {
       {showEvaluation && result && (
         <div className="modal-backdrop" role="presentation">
           <section className="modal" role="dialog" aria-modal="true" aria-labelledby="evaluation-title">
-            <p className="eyebrow">Evaluation complete</p>
-            <h2 id="evaluation-title">Resume match: {Math.round((result.match_score || 0) * 100)}%</h2>
+            <p className="eyebrow">HR evaluation complete</p>
+            <h2 id="evaluation-title">{result.hr_evaluation?.pass ? 'Would pass HR screening' : 'Needs improvement before HR screening'}</h2>
+            <div className="evaluation-summary">
+              <strong>Keyword match: {Math.round((result.match_score || 0) * 100)}%</strong>
+              {result.hr_evaluation?.score != null && <strong>HR score: {result.hr_evaluation.score}/100</strong>}
+            </div>
+            {result.hr_evaluation?.verdict && <p>{result.hr_evaluation.verdict}</p>}
+            {result.hr_evaluation?.low_lying_areas?.length > 0 && (
+              <>
+                <h3>Low-lying areas</h3>
+                <ul className="evaluation-list">
+                  {result.hr_evaluation.low_lying_areas.map((area) => <li key={area}>{area}</li>)}
+                </ul>
+              </>
+            )}
+            {result.hr_evaluation?.strengths?.length > 0 && (
+              <>
+                <h3>Strengths</h3>
+                <ul className="evaluation-list">
+                  {result.hr_evaluation.strengths.map((strength) => <li key={strength}>{strength}</li>)}
+                </ul>
+              </>
+            )}
             <p>{result.missing_keywords?.length ? 'These keywords are still missing:' : 'All identified keywords are present.'}</p>
             {result.missing_keywords?.length > 0 && (
               <div className="skill-list">{result.missing_keywords.map((skill) => <span key={skill}>{skill}</span>)}</div>

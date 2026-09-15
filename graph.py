@@ -190,7 +190,9 @@ Master resume:
 {feedback_block}
 
 Return only complete compilable LaTeX source code. Do not wrap it in Markdown fences or add commentary.
-Preserve truthful experience and skills; do not invent qualifications."""
+Preserve and include all substantive sections from the master resume, especially Education, Certifications, Skills, Professional Experience, Projects, and any clearly labeled additional sections. Never omit Education or another existing section merely because it is less relevant to the job; you may reorder sections and tailor their wording while preserving truthful content.
+Preserve truthful experience and skills; do not invent qualifications.
+Create or rewrite project bullet points only from projects and evidence already present in the master resume. Use those project bullets to demonstrate relevant selected skills with concrete actions, technologies, outcomes, or responsibilities when the source supports them. Do not invent projects, tools, metrics, responsibilities, outcomes, or technical claims; if the master resume does not provide evidence for a skill, do not manufacture a project bullet for it."""
 
     contents = _build_llm_contents(prompt, state)
     response = client.models.generate_content(

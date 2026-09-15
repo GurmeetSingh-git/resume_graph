@@ -51,6 +51,7 @@ def _build_gemini_client():
 
 
 client = _build_gemini_client()
+HR_EVALUATION_MODEL = os.getenv("HR_EVALUATION_MODEL", "gemini-3.1-flash-lite")
 MODEL_CONFIG = types.GenerateContentConfig(
     automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
 )
@@ -106,6 +107,57 @@ def _load_resume_source(source: str | None):
         raise HTTPException(status_code=400, detail=f"Could not read resume: {exc}") from exc
 
 
+def _evaluate_resume_as_hr(job_description: str, generated_resume: str):
+    prompt = f"""Act as a harsh but fair senior HR evaluator for this job application.
+
+Decide whether you would pass this resume to the next hiring stage based only on the job description and resume below. Identify the low-lying areas that would reduce the chance of passing. Distinguish a true missing qualification from a skill that is present but weakly evidenced. Do not request or infer information outside these two inputs.
+
+Return ONLY valid JSON in this format:
+{{
+  "pass": true,
+  "score": 0,
+  "verdict": "short decision",
+  "low_lying_areas": ["specific weakness"],
+  "strengths": ["specific strength"]
+}}
+
+Job description:
+{job_description}
+
+Resume:
+{generated_resume}"""
+    def parse_evaluation(response):
+        text = (response.text or "").strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        evaluation = json.loads(text)
+        if not isinstance(evaluation, dict):
+            raise ValueError("HR evaluation was not an object")
+        return {
+            "pass": bool(evaluation.get("pass", False)),
+            "score": evaluation.get("score"),
+            "verdict": str(evaluation.get("verdict", "No verdict provided.")),
+            "low_lying_areas": [str(item) for item in evaluation.get("low_lying_areas", [])],
+            "strengths": [str(item) for item in evaluation.get("strengths", [])],
+        }
+
+    try:
+        response = client.models.generate_content(
+            model=HR_EVALUATION_MODEL, contents=prompt, config=MODEL_CONFIG
+        )
+        evaluation = parse_evaluation(response)
+        evaluation["model"] = HR_EVALUATION_MODEL
+        return evaluation
+    except Exception as exc:
+        return {
+            "pass": False,
+            "score": None,
+            "verdict": "HR evaluation was unavailable. Check model quota or billing.",
+            "low_lying_areas": [str(exc)],
+            "strengths": [],
+        }
+
+
 @app.post("/api/analyze-resume")
 def analyze_resume(payload: dict):
     source = (payload or {}).get("resume_url") or (payload or {}).get("resume_path") or os.getenv("RESUME_SOURCE")
@@ -159,6 +211,7 @@ async def generate_resume(request: Request):
             "feedback": form.get("feedback"),
             "added_skills": form.get("added_skills"),
             "job_skills": form.get("job_skills"),
+            "hr_feedback": form.get("hr_feedback"),
         }
         uploaded_file = form.get("format_file")
     else:
@@ -196,6 +249,7 @@ async def generate_resume(request: Request):
             format_reference = f"Uploaded format reference file: {safe_name}"
 
     feedback = (payload.get("feedback") or "").strip()
+    hr_feedback = (payload.get("hr_feedback") or "").strip()
     added_skills = payload.get("added_skills") or []
     if isinstance(added_skills, str):
         try:
@@ -225,6 +279,9 @@ Candidate's master resume:
 Additional feedback:
 {feedback}
 
+Previous HR evaluation to address during this iteration:
+{hr_feedback or "None"}
+
 Skills the candidate explicitly selected as skills they have and want included:
 {", ".join(added_skills) or "None"}
 
@@ -232,7 +289,9 @@ Format reference:
 {format_reference or "None provided"}
 
 Return only complete compilable LaTeX source code. Do not use Markdown fences or commentary.
-Include every selected skill in an appropriate skills or experience section when it can be stated truthfully based on the candidate's confirmation. Do not invent employers, dates, achievements, or experience."""
+Preserve and include all substantive sections from the master resume, especially Education, Certifications, Skills, Professional Experience, Projects, and any clearly labeled additional sections. Never omit Education or another existing section merely because it is less relevant to the job; you may reorder sections and tailor their wording while preserving truthful content.
+Include every selected skill in an appropriate skills or experience section when it can be stated truthfully based on the candidate's confirmation. Do not invent employers, dates, achievements, or experience.
+Create or rewrite project bullet points only from projects and evidence already present in the master resume. Use those project bullets to demonstrate relevant selected skills with concrete actions, technologies, outcomes, or responsibilities when the source supports them. Do not invent projects, tools, metrics, responsibilities, outcomes, or technical claims; if the master resume does not provide evidence for a skill, do not manufacture a project bullet for it."""
 
     content_parts = [types.Part.from_text(text=prompt)]
     if uploaded_file_path and uploaded_file_mime_type and uploaded_file_mime_type.startswith("image/"):
@@ -265,6 +324,7 @@ Include every selected skill in an appropriate skills or experience section when
     keywords, matched, missing, match_score = _get_keyword_match(
         generated_resume, job_description, added_skills, job_skills
     )
+    hr_evaluation = _evaluate_resume_as_hr(job_description, generated_resume)
 
     return {
         "status": "ok",
@@ -272,6 +332,7 @@ Include every selected skill in an appropriate skills or experience section when
         "match_score": match_score,
         "matched_keywords": matched,
         "missing_keywords": missing,
+        "hr_evaluation": hr_evaluation,
         "resume_preview": resume_text[:2000],
         "source": source,
         "format_reference": format_reference,

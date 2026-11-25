@@ -51,7 +51,10 @@ def _build_gemini_client():
 
 
 client = _build_gemini_client()
-HR_EVALUATION_MODEL = os.getenv("HR_EVALUATION_MODEL", "gemini-3.1-flash-lite")
+DEFAULT_MODEL = os.getenv("GEMINI_MODEL", "gemma-4-26b-a4b-it")
+SKILLS_EXTRACTION_MODEL = os.getenv("SKILLS_EXTRACTION_MODEL", DEFAULT_MODEL)
+RESUME_GENERATION_MODEL = os.getenv("RESUME_GENERATION_MODEL", "gemini-3.8-flash")
+HR_EVALUATION_MODEL = os.getenv("HR_EVALUATION_MODEL", DEFAULT_MODEL)
 MODEL_CONFIG = types.GenerateContentConfig(
     automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
 )
@@ -73,7 +76,7 @@ Use one skill per item, normally 1-4 words. Return ONLY valid JSON in this forma
 Job description:
 {job_description}"""
     response = client.models.generate_content(
-        model="gemma-4-26b-a4b-it", contents=prompt, config=MODEL_CONFIG
+        model=SKILLS_EXTRACTION_MODEL, contents=prompt, config=MODEL_CONFIG
     )
     text = (response.text or "").strip()
     if text.startswith("```"):
@@ -309,7 +312,7 @@ Create or rewrite project bullet points only from projects and evidence already 
 
     try:
         response = client.models.generate_content(
-            model="gemma-4-26b-a4b-it", contents=contents, config=MODEL_CONFIG
+            model=RESUME_GENERATION_MODEL, contents=contents, config=MODEL_CONFIG
         )
         generated_resume = (response.text or "").strip()
     except Exception as exc:
